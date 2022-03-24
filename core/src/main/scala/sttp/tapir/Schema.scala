@@ -11,6 +11,7 @@ import java.io.InputStream
 import java.math.{BigDecimal => JBigDecimal, BigInteger => JBigInteger}
 import java.nio.ByteBuffer
 import java.time._
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.{Date, UUID}
 import scala.annotation.{StaticAnnotation, implicitNotFound}
 
@@ -207,19 +208,34 @@ case class Schema[T](
   }
 
   private[tapir] def hasValidation: Boolean = {
-    (validator != Validator.pass) || (schemaType match {
-      case SOption(element)          => element.hasValidation
-      case SArray(element)           => element.hasValidation
-      case s: SProduct[T]            => s.fieldsWithValidation.nonEmpty
-      case SOpenProduct(valueSchema) => valueSchema.hasValidation
-      case SCoproduct(subtypes, _)   => subtypes.exists(_.hasValidation)
-      case SRef(_)                   => true
-      case _                         => false
-    })
+    val c = Schema.counter.getAndIncrement()
+    val optST = Option(schemaType)
+    val rv = try {
+      println(s"trying hasValidation[$c] for ${name} of type ${optST}")
+      (validator != Validator.pass) || optST.exists {
+        case SOption(element) => element.hasValidation
+        case SArray(element) => Option(element).exists(_.hasValidation)
+        case s: SProduct[T] => s.fieldsWithValidation.nonEmpty
+        case SOpenProduct(valueSchema) => valueSchema.hasValidation
+        case SCoproduct(subtypes, _) => Option(subtypes).exists(_.exists(_.hasValidation))
+        case SRef(_) => true
+        case _ => false
+      }
+    } catch {
+      case npe: java.lang.NullPointerException =>
+        println(s"hasValidation[$c] for $name failed")
+        npe.printStackTrace(System.err)
+        false
+    }
+    println(s"finished hasValidation[$c] for ${name} of type ${optST}")
+    rv
   }
 }
 
 object Schema extends LowPrioritySchema with SchemaCompanionMacros {
+
+  private[tapir] val counter = new AtomicInteger(0)
+
   val ModifyCollectionElements = "each"
 
   /** Creates a schema for type `T`, where the low-level representation is a `String`. */
